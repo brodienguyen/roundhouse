@@ -258,6 +258,8 @@ pub struct ViewLowerCtx<'a> {
     /// Generated RouteHelpers function name -> how many REQUIRED
     /// positionals it takes. See the ViewCtx field of the same name.
     route_helper_arity: std::rc::Rc<crate::det::HashMap<String, usize>>,
+    /// See the ViewCtx field of the same name.
+    sti_stems: std::rc::Rc<crate::det::HashMap<String, Vec<String>>>,
     /// Partials with a `<%# locals: (…) -%>` header, keyed by ViewKey →
     /// their declared keyword locals (excluding the first/positional
     /// record). Render call sites consult it to bind provided locals by
@@ -346,6 +348,7 @@ impl<'a> ViewLowerCtx<'a> {
                 route_helpers.iter().map(|(n, _)| n.clone()).collect(),
             ),
             route_helper_arity: std::rc::Rc::new(route_helpers.into_iter().collect()),
+            sti_stems: std::rc::Rc::new(crate::lower::tag_builder::sti_route_stems(app)),
             strict_locals: std::rc::Rc::new(strict_locals_by_key(&app.views)),
             collection_element_locals: std::rc::Rc::new(collection_element_locals(&app.views, app)),
             form_wrappers: std::rc::Rc::new(form_wrapper_helpers(app)),
@@ -828,6 +831,7 @@ fn build_library_class(view: &View, lx: &ViewLowerCtx, type_body: bool) -> Libra
         route_helper_names: lx.route_helper_names.clone(),
         i18n: lx.i18n.clone(),
         route_helper_arity: lx.route_helper_arity.clone(),
+        sti_stems: lx.sti_stems.clone(),
         form_wrappers: lx.form_wrappers.clone(),
         form_with_entry: lx.form_with_entry,
         stylesheets: app.stylesheets.clone(),
@@ -4798,6 +4802,10 @@ pub(super) struct ViewCtx {
     /// keeps the argument — the same "no route table, assume the
     /// pre-gating shape" convention `route_helper_names` uses.
     pub(super) route_helper_arity: std::rc::Rc<crate::det::HashMap<String, usize>>,
+    /// STI base → its subclasses' route stems (`room` → `rooms_open`,
+    /// …): a `form_with model:` over an STI base names its route from
+    /// the record's runtime class (`tag_builder::sti_route_stems`).
+    pub(super) sti_stems: std::rc::Rc<crate::det::HashMap<String, Vec<String>>>,
     /// Helper methods that wrap a builder-yielding form helper
     /// (`form_wrapper_helpers`). A call site passing a block is spliced
     /// to the wrapped call so the form-builder macro-inline can see

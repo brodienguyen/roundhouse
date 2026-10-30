@@ -375,6 +375,8 @@ mod inline_filter_guard;
 mod before_action_return;
 #[path = "emit_and_run/sti_global_id.rs"]
 mod sti_global_id;
+#[path = "emit_and_run/form_with_sti.rs"]
+mod form_with_sti;
 #[path = "emit_and_run/global_id_app.rs"]
 mod global_id_app;
 #[path = "support/campfire_caches.rs"]

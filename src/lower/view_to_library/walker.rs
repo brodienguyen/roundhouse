@@ -1845,6 +1845,7 @@ mod tests {
             route_helper_names: Default::default(),
             i18n: Default::default(),
             route_helper_arity: Default::default(),
+            sti_stems: Default::default(),
             form_wrappers: Default::default(),
             form_with_entry: false,
             stylesheets: Vec::new(),

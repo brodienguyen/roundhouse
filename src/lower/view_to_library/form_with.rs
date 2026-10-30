@@ -1035,7 +1035,7 @@ fn classify_form_with_components(
         send(Some(model.clone()), "id", Vec::new(), None, false)
     };
     let member_path =
-        super::member_path_call(ctx, &format!("{singular}_path"), member_arg);
+        super::member_path_call(ctx, &format!("{singular}_path"), member_arg.clone());
     let collection_path = send(
         Some(route_helpers()),
         &format!("{plural}_path"),
@@ -1043,6 +1043,44 @@ fn classify_form_with_components(
         None,
         false,
     );
+    // An STI base's records belong to subclasses, and Rails'
+    // `polymorphic_path` names the route from the record's CLASS: an
+    // edited `Rooms::Open` PATCHes `/rooms/opens/1` and a new
+    // `Rooms::Direct` POSTs `/rooms/directs`, not `/rooms`. Which
+    // subclass a base-typed record is, is a runtime question, so both
+    // arms dispatch on `dom_prefix()` as `link_to [ :edit, @room ]`
+    // does. A subclass whose route the app does not declare falls to
+    // the base's arm.
+    let (member_path, collection_path) = match sti_base_stems(&model, &singular, ctx) {
+        Some(stems) => {
+            let declared = |helper: &str| ctx.route_helper_names.contains(helper);
+            let member_stems: Vec<&String> =
+                stems.iter().filter(|stem| declared(&format!("{stem}_path"))).collect();
+            let collection_stems: Vec<&String> = stems
+                .iter()
+                .filter(|stem| declared(&format!("{}_path", crate::naming::pluralize_snake(stem))))
+                .collect();
+            let member = crate::lower::tag_builder::sti_route_dispatch(
+                &model,
+                Span::synthetic(),
+                &member_stems,
+                member_path,
+                |stem| super::member_path_call(ctx, &format!("{stem}_path"), member_arg.clone()),
+            );
+            let collection = crate::lower::tag_builder::sti_route_dispatch(
+                &model,
+                Span::synthetic(),
+                &collection_stems,
+                collection_path,
+                |stem| {
+                    let helper = format!("{}_path", crate::naming::pluralize_snake(stem));
+                    send(Some(route_helpers()), &helper, Vec::new(), None, false)
+                },
+            );
+            (member, collection)
+        }
+        None => (member_path, collection_path),
+    };
     // Emit only the arms whose route helper EXISTS (domains has a
     // member route but no collection; an unconditional ternary calls
     // an undefined RouteHelpers method). An empty helper set (test
@@ -1560,6 +1598,7 @@ mod tests {
             route_helper_names: Default::default(),
             i18n: Default::default(),
             route_helper_arity: Default::default(),
+            sti_stems: Default::default(),
             form_wrappers: Default::default(),
             form_with_entry: true,
             stylesheets: Vec::new(),
@@ -1677,6 +1716,25 @@ mod tests {
         };
         assert_eq!(path.last().map(|s| s.as_str()), Some("ViewHelpers"));
     }
+}
+
+/// The subclass route stems when the form's resource (`singular`, the
+/// route the record resolved to above) is an STI base, and the app
+/// declares routes to check them against. `None` when the record types
+/// as some other class (a subclass already names its own route), and in
+/// a harness with no route table, which cannot tell a declared subclass
+/// route from a missing one. An untyped record (a partial's `room`
+/// local) resolved to the base by its name is still a base record.
+fn sti_base_stems<'a>(model: &Expr, singular: &str, ctx: &'a ViewCtx) -> Option<&'a Vec<String>> {
+    if ctx.route_helper_names.is_empty() {
+        return None;
+    }
+    if let Some(crate::ty::Ty::Class { id, .. }) = model.ty.as_ref().map(crate::ty::Ty::peel_nilable) {
+        if snake_case(id.0.as_str()) != singular {
+            return None;
+        }
+    }
+    ctx.sti_stems.get(singular)
 }
 
 /// The identifier a `form_with model:` record is bound to — a local, an
