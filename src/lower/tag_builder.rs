@@ -120,31 +120,8 @@ pub fn apply_tag_builder_lowering(
     // `route_format_suffix` and `route_url_options` key off, so the three
     // passes cannot disagree about what a route helper is.
     let helpers = super::route_format_suffix::route_helper_names(app);
-    // STI base → subclass dom stems (`room` → `["rooms_open", …]`),
-    // from the same `sti_subclass_names` stamp `dom_prefix` dispatches
-    // on (`sti_scope` has run by this point in the pipeline). A
-    // polymorphic URL names its route through the record's CLASS, and
-    // for an STI base the class is a runtime question.
-    let sti_stems: crate::det::HashMap<String, Vec<String>> = app
-        .models
-        .iter()
-        .filter(|m| !m.sti_subclass_names.is_empty())
-        .map(|m| {
-            let stems = m
-                .sti_subclass_names
-                .iter()
-                .map(|sub| {
-                    sub.0
-                        .as_str()
-                        .split("::")
-                        .map(crate::naming::snake_case)
-                        .collect::<Vec<_>>()
-                        .join("_")
-                })
-                .collect();
-            (crate::naming::snake_case(m.name.0.as_str()), stems)
-        })
-        .collect();
+    // STI base → subclass route stems; see `sti_route_stems`.
+    let sti_stems = sti_route_stems(app);
     // A receiver-less `tag` is the builder only where nothing else
     // answers it. A class with its own `tag` — `belongs_to :tag`, a
     // `tag` column, `attr_reader :tag`, a `def tag` — calls ITS reader
@@ -678,15 +655,10 @@ fn polymorphic_route_call(
     // is a `Rooms::Open`, so `[ :edit, @room ]` is
     // `edit_rooms_open_path` (`/rooms/opens/1/edit`), not
     // `edit_room_path`. Hydration here is base-classed, so the call
-    // dispatches on `dom_prefix()` — the type-column dispatch
-    // `sti_scope`'s stamp synthesizes, whose answer IS the route stem
-    // (both are the underscored class name). A subclass whose helper
-    // the app does not declare folds into the base arm, same posture as
-    // the base-helper guard above; a base with no subclasses keeps the
-    // plain call. A nested `If` chain rather than a `Case`, because
-    // this lands in app helper code every target compiles and the
-    // weakest emitter (TypeScript) has no `case` arm — `if` in value
-    // position is the proven shape (the attribute guards ride it).
+    // dispatches on `dom_prefix()` (`sti_route_dispatch`). A subclass
+    // whose helper the app does not declare folds into the base arm,
+    // same posture as the base-helper guard above; a base with no
+    // subclasses keeps the plain call.
     let routable: Vec<&String> = sti_stems
         .get(&singular)
         .map(|stems| {
@@ -696,10 +668,56 @@ fn polymorphic_route_call(
                 .collect()
         })
         .unwrap_or_default();
-    let mut dispatch = route_call(&name);
-    for stem in routable.iter().rev() {
+    Some(sti_route_dispatch(record, url.span, &routable, route_call(&name), |stem| {
+        route_call(&format!("{joined_prefix}{stem}_path"))
+    }))
+}
+
+/// STI base → subclass dom stems (`room` → `["rooms_open", …]`), from
+/// the same `sti_subclass_names` stamp `dom_prefix` dispatches on
+/// (`sti_scope` runs before any pass that reads this). Rails names a
+/// record's route through its CLASS, and for an STI base the class is
+/// a runtime question.
+pub(crate) fn sti_route_stems(app: &App) -> crate::det::HashMap<String, Vec<String>> {
+    app.models
+        .iter()
+        .filter(|m| !m.sti_subclass_names.is_empty())
+        .map(|m| {
+            let stems = m
+                .sti_subclass_names
+                .iter()
+                .map(|sub| {
+                    sub.0
+                        .as_str()
+                        .split("::")
+                        .map(crate::naming::snake_case)
+                        .collect::<Vec<_>>()
+                        .join("_")
+                })
+                .collect();
+            (crate::naming::snake_case(m.name.0.as_str()), stems)
+        })
+        .collect()
+}
+
+/// `if record.dom_prefix() == "<stem>" then arm(stem) … else base`, one
+/// arm per routable subclass stem, in `stems` order. `dom_prefix()` is
+/// the type-column dispatch `sti_scope`'s stamp synthesizes, and its
+/// answer IS the route stem (both are the underscored class name). A
+/// nested `If` chain rather than a `Case`: this lands in code every
+/// target compiles, and the weakest emitter (TypeScript) has no `case`
+/// arm. No stems is the plain `base`.
+pub(crate) fn sti_route_dispatch(
+    record: &Expr,
+    span: crate::span::Span,
+    stems: &[&String],
+    base: Expr,
+    arm: impl Fn(&str) -> Expr,
+) -> Expr {
+    let mut dispatch = base;
+    for stem in stems.iter().rev() {
         let dom_prefix = Expr::new(
-            url.span,
+            span,
             ExprNode::Send {
                 recv: Some(record.clone()),
                 method: Symbol::from("dom_prefix"),
@@ -709,12 +727,12 @@ fn polymorphic_route_call(
             },
         );
         let cond = Expr::new(
-            url.span,
+            span,
             ExprNode::Send {
                 recv: Some(dom_prefix),
                 method: Symbol::from("=="),
                 args: vec![Expr::new(
-                    url.span,
+                    span,
                     ExprNode::Lit { value: Literal::Str { value: (*stem).clone() } },
                 )],
                 block: None,
@@ -722,15 +740,11 @@ fn polymorphic_route_call(
             },
         );
         dispatch = Expr::new(
-            url.span,
-            ExprNode::If {
-                cond,
-                then_branch: route_call(&format!("{joined_prefix}{stem}_path")),
-                else_branch: dispatch,
-            },
+            span,
+            ExprNode::If { cond, then_branch: arm(stem), else_branch: dispatch },
         );
     }
-    Some(dispatch)
+    dispatch
 }
 
 /// `link_to url, opts do … end` written in a HELPER body — Rails'
